@@ -1,6 +1,47 @@
 from pyscicat.client import ScicatClient
 import json
 
+ENERGY_SCAN_BUILDER = {
+    "XAS-4.0.2": {
+        "header": "Flying Beamline Energy (763, 813, 0.1, 0)",
+        "subheader": "EPU\tPolarization",
+        "body": "",
+    },
+    "XLD-4.0.2": {
+        "header": "Flying Energy (763, 813, 0.1, 0)",
+        "subheader": "EPU\tPolarization",
+        "body": "",
+    },
+    "XAS-6.3.1": {
+        "header": "Flying Energy (763, 813, 0.1, 0)",
+        "subheader": "Theta\tY_samples\tZ_samples\tMagnet Field\tPolarization",
+        "body": "",
+    },
+    "XLD-6.3.1": {
+        "header": "Flying Energy (500, 600, 0.1, 1)", # does it matter that these are different?
+        "subheader": "Theta\tY_samples\tZ_samples\tMagnet\tField Polarization",
+        "body": "",
+    },
+    "XMCD-6.3.1": {
+        "header": "Flying Energy (763, 813, 0.1, 1)",
+        "subheader": "Theta\tY_samples\tZ_samples\tMagnet\tField Polarization",
+    }
+}
+
+ELEMENT_ENERGY_RANGE = {
+    "O": "flying(533.1, 553.1, 0.1, 1)", # K edges: 543.1 EV
+    "Al": "(1549.6, 1569.6, 0.1, 1)", # K edges: 1559.6 EV
+    "Si": "(1829, 1839, 0.1, 1)", # 1839 EV
+    "Ti": "(433.8, 480.2, 0.1, 1)", # L edges: 453.8 EV - 460.2 EV
+    "V": "(492.1, 539.8, 0.1, 1)", # L edges: 512.1 EV - 519.8 EV
+    "Cr": "(554.1, 593.8, 0.1, 1)", # L edges: 574.1 EV - 583.8 EV
+    "Mn": "(618.7, 669.9, 0.1, 1)", # L edges: 638.7 EV - 649.9 EV
+    "Fe": "(686.8, 739.9, 0.1, 1)", # L edges: 706.8 EV - 719.9 EV
+    "Co": "(758.1, 823.2, 0.1, 1)", # L eddges: 778.1 EV - 793.2 EV
+    "Ni": "(832.7, 890.0, 0.1, 1)", # L edges: 852.7 EV - 870.0 EV
+    "Cu": "(912.7, 972.3, 0.1, 1)", # L edges: 932.7 EV - 952.3 EV
+}
+
 # Prompt to direct users on how to use program
 def display_prompt():
     print("Welcome to the LabView Scan Type Generator")
