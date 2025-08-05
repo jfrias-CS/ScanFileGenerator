@@ -1,11 +1,12 @@
 from pyscicat.client import ScicatClient
 import json
+import sys
 import os
 from pathlib import Path
 
 ENERGY_SCAN_TEMPLATE = {
     "XAS-4.0.2": {
-        "header": f"Flying Beamline Energy (763, 813, 0.1, 0)\t",
+        "header": "Flying Beamline Energy (763, 813, 0.1, 0)\t",
         "subheader": "EPU\tPolarization",
         "body": {
             "epu": [f"100\t", f"190\t"],
@@ -33,9 +34,11 @@ ENERGY_SCAN_TEMPLATE = {
         "subheader": "Theta\tY_samples\tZ_samples\tMagnet\tField Polarization",
         "body": "",
     },
-    "zero_input": f"0\t",
-    "neg_one": f"-1\t",
-    "save": f"File\n", 
+    "constants": {
+        "zero_input": f"0\t",
+        "neg_one": f"-1\t",
+        "save": f"File\n", 
+    }
 }
 
 ELEMENT_ENERGY_RANGE = {
@@ -53,7 +56,6 @@ ELEMENT_ENERGY_RANGE = {
 }
 
 def build_XAS_402_body(config, scan_body, zero, energy_element_tag, repititions, save):
-    # print(scan_body)
     epu = ENERGY_SCAN_TEMPLATE["XAS-4.0.2"]["body"]["epu"]
     for n in range(repititions):
         scan_body.extend([
@@ -119,7 +121,7 @@ SCAN_BODY_BULIDERS = {
 }
 # Prompt to direct users on how to use program
 def display_prompt():
-    print("Welcome to the LabView Scan Type Generator")
+    print("\nWelcome to the LabView Scan File Generator\n")
 
 # Collects user credentials to login
 def get_user_credentials():
@@ -140,39 +142,53 @@ def get_bars_from_scicat_server(proposal_id_input=None, username_input=None, pas
         print("Error: Missing required credentials.")
         return None
     
-    # Create a client instance
-    client = ScicatClient(
-        base_url="http://localhost/api/v3", 
-        username="admin", 
-        password="2jf70TPNZsS", 
-        auto_login=False
-        )
+    try:
+        # Create a client instance
+        # client = ScicatClient(
+        #     base_url="http://localhost/api/v3", 
+        #     username="admin", 
+        #     password="2jf70TPNZsS", 
+        #     auto_login=False
+        #     )
+        client = ScicatClient(
+            base_url="http://localhost/api/v3", 
+            username=username_input, 
+            password=password_input, 
+            auto_login=False
+            )
+        print(f"\nAttempting to login as {client._username}...")
+
+        # Temporarily redirect stderr to suppress library output
+        old_stderr = sys.stderr
+        sys.stderr = open(os.devnull, 'w')
+        client._headers["Host"] = "backend.localhost"
+        client.login()
+
+        # Restor stderr
+        sys.stderr.close()
+        sys.stderr = old_stderr
+        print("\nLogin successful.")
+    except Exception:
+        # print(f"Login failed due to incorrect credentials.")
+        return None
     
-    # client = ScicatClient(
-    #     base_url="http://localhost/api/v3", 
-    #     username=username_input, 
-    #     password=password_input, 
-    #     auto_login=False
-    #     )
-
-    # print(client._username)
-    client._headers["Host"] = "backend.localhost"
-    client.login()
-
     # When we deploy we should use this line of code so that users have to input a valid input
     # proposal_id = proposal_id_input
     proposal_id = "admin"
     # filter_group = {"where":{"ownerGroup": proposal_id, "sampleCharacteristics:als_sample_tracking:group_id":"402"}}
     filter_group = {"ownerGroup": proposal_id}
-    scicat_results = client.samples_get_many(filter_fields=filter_group)
-    print("Getting Data...\n")
-    # print(json.dumps(scicat_results, indent=2))
-    return(scicat_results)
+    try:
+        scicat_results = client.samples_get_many(filter_fields=filter_group)
+        print("Downloading data...\n")
+        # print(json.dumps(scicat_results, indent=2))
+        return(scicat_results)
+    except Exception:
+        print(f"Failed to retrieve data:")
+        return None
 
 # Create Dictionary of {"bar_id": {"bar_parameters": data, "samples": samples}}
 def filter_scicat_bars(user_credentials, scicat_results):
     # dictionary for filters dictionary {key : data}, key = bar ID, data = bar parameters and nested sample list
-    # print("filter_scicat_bars: ", json.dumps(scicat_results, indent=2))
     barsById = {}
     for result in scicat_results:
         # Filter for valid sets
@@ -203,11 +219,9 @@ def filter_scicat_bars(user_credentials, scicat_results):
             }
             # Add samples to barsById sample list key
             barsById[shortcut["set_id"]]["sample_configs"].append(scicat_sample)
-    # print("barsById", json.dumps(barsById, indent=2))
     return barsById
 
 def build_scan_file(filtered_bars):
-    # print("Filtered Bars: ", json.dumps(filtered_bars, indent=2))
     scan_files = {}
 
     for bar_id, bar_data in filtered_bars.items():
@@ -231,14 +245,13 @@ def build_scan_file(filtered_bars):
                 scan_file_info = f"# Sample Info: sample name: {sample_name} | bar name: {bar_name} | scan type: {scan_type}\n\n"
                 header = f"{ENERGY_SCAN_TEMPLATE[scan_type]["header"]}\n"
                 subheader = f"{ENERGY_SCAN_TEMPLATE[scan_type]["subheader"]}\n"
-                zero = ENERGY_SCAN_TEMPLATE["zero_input"]
+                zero = ENERGY_SCAN_TEMPLATE["constants"]["zero_input"]
                 element_energy_tag = f"{ELEMENT_ENERGY_RANGE[config["scan_parameters"]["element_template"]]}\n"
                 repititions = int(int(config["scan_parameters"]["repititions"]) / 2)
-                save = ENERGY_SCAN_TEMPLATE["save"]
+                save = ENERGY_SCAN_TEMPLATE["constants"]["save"]
                 scan_body = []
                 scan_body.append(f"{scan_file_info}{header}{subheader}")
                 build_file = SCAN_BODY_BULIDERS[scan_type](config, scan_body, zero, element_energy_tag, repititions, save)
-                # print(json.dumps(build_file, indent=2))
  
                 scan_files[bar_id]["scan_files"].append({
                     "sample_id": sample_id,
@@ -253,47 +266,49 @@ def build_scan_file(filtered_bars):
 def save_files(scan_files, proposal_id):
     main_dir = f"{proposal_id}"
     os.makedirs(main_dir, exist_ok=True)
-    print("Main dir:\n", main_dir)
+    print(f"Main dir:\n\t{main_dir}")
     for bar_id, bar_data in scan_files.items():
         bar_name = bar_data["bar_name"]
         bar_dir = os.path.join(main_dir, bar_name)
         os.makedirs(bar_dir, exist_ok=True)
-        print("Bar folder:\n", bar_dir)
+        print(f"Bar folder:\n\t{bar_dir}")
         for sample in bar_data["scan_files"]:
             safe_sample_name = "".join(c for c in sample["sample_name"] if c.isalnum() or c in (" ", "_")).rstrip()
             sample_file = os.path.join(bar_dir, f"{safe_sample_name}.txt")
-            print("making sample file:\n", sample_file)
+            print(f"Sample file locations:\n\t{sample_file}")
             with open(sample_file, 'w') as f:
                 f.write("".join(sample["build_file"]))
 
+def run_file_generator():
+    user_credentials = get_user_credentials()
+    # user_credentials = {
+    #     "proposal_id": "admin",
+    #     "beamline": "",
+    #     "username": "admin",
+    #     "password": "2jf70TPNZsS",
+    #     }
+    scicat_results = get_bars_from_scicat_server(proposal_id_input=user_credentials["proposal_id"], username_input=user_credentials["username"], password_input=user_credentials["password"])
+    if scicat_results is None:
+        print("Failed to retrieve data from Scicat. Please try again.\n")
+        return
+    filtered_bars = filter_scicat_bars(user_credentials, scicat_results)
+    scan_files = build_scan_file(filtered_bars)
+    save_files(scan_files, user_credentials["proposal_id"])
+
 def main():
     display_prompt()
-    repeat = 'y'
-    # user_credentials = get_user_credentials()
-    user_credentials = {
-        "proposal_id": "admin",
-        "beamline": "",
-        "username": "admin",
-        "password": "2jf70TPNZsS",
-        }
-    scicat_results = get_bars_from_scicat_server(proposal_id_input=user_credentials["proposal_id"], username_input=user_credentials["username"], password_input=user_credentials["password"])
-    # print("Scicat_results from main: \n", json.dumps(scicat_results, indent=2))
-    filtered_bars = filter_scicat_bars(user_credentials, scicat_results)
-    # print("Filtered bars in main:\n", json.dumps(filtered_bars, indent=2))
-    scan_files = build_scan_file(filtered_bars)
-    print("Scan files:\n", json.dumps(scan_files, indent=2))
-    save_files(scan_files, user_credentials["proposal_id"])
-    # while repeat[0] != 'n':
-    #     repeat = input("Would you like to generate any more scan files? (Y/N): ").lower() # quits the loop
-    #     if repeat[0] == 'y':
-    #         user_credentials = get_user_credentials()
-    #         scicat_results = get_bars_from_scicat_server(proposal_id_input=user_credentials["proposal_id"], username_input=user_credentials["username"], password_input=user_credentials["password"])
-    #         filtered_bars = filter_scicat_bars(user_credentials, scicat_results)
-    #     elif repeat[0] == 'n':
-    #         print("Quitting program...")
-    #         exit
-    #     else:
-    #         print("You made an invalid choice:")
+    repeat = "y"
+    run_file_generator()
+    while repeat[0] != 'n':
+        repeat = input("Would you like to generate any more scan files? (Y/N): ").lower() # quits the loop
+        print("\n")
+        if repeat[0] == 'y':
+            run_file_generator()
+        elif repeat[0] == 'n':
+            print("Quitting program...")
+            exit
+        else:
+            print("You made an invalid choice:")
     
 
 if __name__ == "__main__":
