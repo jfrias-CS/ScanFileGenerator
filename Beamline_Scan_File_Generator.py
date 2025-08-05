@@ -1,16 +1,22 @@
 from pyscicat.client import ScicatClient
 import json
+import os
+from pathlib import Path
 
-ENERGY_SCAN_BUILDER = {
+ENERGY_SCAN_TEMPLATE = {
     "XAS-4.0.2": {
-        "header": "Flying Beamline Energy (763, 813, 0.1, 0)",
+        "header": f"Flying Beamline Energy (763, 813, 0.1, 0)\t",
         "subheader": "EPU\tPolarization",
-        "body": "",
+        "body": {
+            "epu": [f"100\t", f"190\t"],
+        },
     },
     "XLD-4.0.2": {
-        "header": "Flying Energy (763, 813, 0.1, 0)",
+        "header": "Flying Beamline Energy (763, 813, 0.1, 0)",
         "subheader": "EPU\tPolarization",
-        "body": "",
+        "body": {
+            "epu": [f"100\t", f"190\t"],
+        },
     },
     "XAS-6.3.1": {
         "header": "Flying Energy (763, 813, 0.1, 0)",
@@ -25,7 +31,11 @@ ENERGY_SCAN_BUILDER = {
     "XMCD-6.3.1": {
         "header": "Flying Energy (763, 813, 0.1, 1)",
         "subheader": "Theta\tY_samples\tZ_samples\tMagnet\tField Polarization",
-    }
+        "body": "",
+    },
+    "zero_input": f"0\t",
+    "neg_one": f"-1\t",
+    "save": f"File\n", 
 }
 
 ELEMENT_ENERGY_RANGE = {
@@ -42,6 +52,71 @@ ELEMENT_ENERGY_RANGE = {
     "Cu": "(912.7, 972.3, 0.1, 1)", # L edges: 932.7 EV - 952.3 EV
 }
 
+def build_XAS_402_body(config, scan_body, zero, energy_element_tag, repititions, save):
+    # print(scan_body)
+    epu = ENERGY_SCAN_TEMPLATE["XAS-4.0.2"]["body"]["epu"]
+    for n in range(repititions):
+        scan_body.extend([
+            epu[0], energy_element_tag, epu[1], energy_element_tag, save,
+            epu[1], energy_element_tag, epu[0], energy_element_tag, save
+        ])
+    return "".join(scan_body)
+
+def build_XLD_402_body(config, scan_body, zero, energy_element_tag, repititions, save):
+    epu = ENERGY_SCAN_TEMPLATE["XLD-4.0.2"]["body"]["epu"]
+    for n in range(repititions):
+        scan_body.extend([
+            epu[0], energy_element_tag, epu[1], energy_element_tag, save,
+            epu[1], energy_element_tag, epu[0], energy_element_tag, save
+        ])
+    return "".join(scan_body)
+
+def build_XAS_631_body(config, scan_body, zero, energy_element_tag, repititions, neg_one, save):
+    angle = f"{config["incident_angles"]}\t"
+    mag_field = [f"{config["magnetic_field"]}\t", f"-{config["magnetic_field"]}\t"]
+    for n in range(repititions):
+        scan_body.extend([
+            angle, zero, zero, mag_field[0], neg_one, energy_element_tag,
+            angle, zero, zero, mag_field[1], neg_one, energy_element_tag, save,
+            angle, zero, zero, mag_field[1], neg_one, energy_element_tag, 
+            angle, zero, zero, mag_field[0], neg_one, energy_element_tag, save            
+        ])
+    return "".join(scan_body)
+
+def build_XLD_631_body(config, scan_body, zero, energy_element_tag, repititions, save):
+    angle = f"{config["incident_angles"]}\t"
+    mag_field = [f"{config["magnetic_field"]}\t", f"-{config["magnetic_field"]}\t"]
+    polarization = f"0\t"
+    for n in range(repititions):
+        scan_body.extend([
+            zero, zero, zero, mag_field[0], polarization, energy_element_tag,
+            angle, zero, zero, mag_field[1], polarization, energy_element_tag, save,
+            angle, zero, zero, mag_field[1], polarization, energy_element_tag,
+            zero, zero, zero, mag_field[0], polarization, energy_element_tag, save
+        ])
+    return "".join(scan_body)
+
+def build_XMCD_631_body(config, scan_body, zero, energy_element_tag, repititions, save):
+    angle = f"{config["incident_angles"]}\t"
+    mag_field = [f"{config["magnetic_field"]}\t", f"-{config["magnetic_field"]}\t"]
+    polarization = f"-1\t"
+    for n in range(repititions):
+        scan_body.extend([
+            angle, zero, zero, mag_field[0], polarization,
+            angle, zero, zero, mag_field[1], polarization, save,
+            angle, zero, zero, mag_field[1], polarization,
+            angle, zero, zero, mag_field[0], polarization, save
+        ])
+
+
+SCAN_BODY_BULIDERS = {
+    "XAS-4.0.2": build_XAS_402_body,
+    "XLD-4.0.2": build_XLD_402_body,
+    "XAS-6.3.1": build_XAS_631_body,
+    "XLD-6.3.1": build_XLD_631_body,
+    "XMCD-6.3.1": build_XMCD_631_body,
+
+}
 # Prompt to direct users on how to use program
 def display_prompt():
     print("Welcome to the LabView Scan Type Generator")
@@ -90,26 +165,31 @@ def get_bars_from_scicat_server(proposal_id_input=None, username_input=None, pas
     # filter_group = {"where":{"ownerGroup": proposal_id, "sampleCharacteristics:als_sample_tracking:group_id":"402"}}
     filter_group = {"ownerGroup": proposal_id}
     scicat_results = client.samples_get_many(filter_fields=filter_group)
+    print("Getting Data...\n")
     # print(json.dumps(scicat_results, indent=2))
     return(scicat_results)
 
 # Create Dictionary of {"bar_id": {"bar_parameters": data, "samples": samples}}
 def filter_scicat_bars(user_credentials, scicat_results):
     # dictionary for filters dictionary {key : data}, key = bar ID, data = bar parameters and nested sample list
+    # print("filter_scicat_bars: ", json.dumps(scicat_results, indent=2))
     barsById = {}
     for result in scicat_results:
+        # Filter for valid sets
         if (result.get("_id", {}) != ""
-            and result.get("ownerGroup", {}) != user_credentials["proposal_id"]
+            and result.get("ownerGroup", {}) == user_credentials["proposal_id"]
             and result.get("sampleCharacteristics", {}).get("als_sample_tracking", {}).get("valid", {}) is True
             and result.get("sampleCharacteristics", {}).get("als_sample_tracking", {}).get("type", {}) == "set"):
             scicat_bar = {
                 "bar_id": result["_id"],
                 "bar_name": result["description"],
-                "samples": []
+                "proposal_id": result["ownerGroup"],
+                "sample_configs": []
             }
             barsById[scicat_bar["bar_id"]] = scicat_bar
+        # Filter for valid samples
         elif (result.get("_id", {}) != ""
-              and result.get("ownerGroup", {}) != user_credentials["proposal_id"]
+              and result.get("ownerGroup", {}) == user_credentials["proposal_id"]
               and result.get("sampleCharacteristics", {}).get("als_sample_tracking", {}).get("valid", {}) is True
               and result.get("sampleCharacteristics", {}).get("als_sample_tracking", {}).get("type", {}) == "configuration"):
             shortcut = result["sampleCharacteristics"]["als_sample_tracking"]
@@ -121,37 +201,100 @@ def filter_scicat_bars(user_credentials, scicat_results):
                 "scan_type": shortcut["scan_type"],
                 "scan_parameters": sample_params,
             }
-            barsById[shortcut["set_id"]]["samples"].append(scicat_sample)
+            # Add samples to barsById sample list key
+            barsById[shortcut["set_id"]]["sample_configs"].append(scicat_sample)
+    # print("barsById", json.dumps(barsById, indent=2))
     return barsById
+
+def build_scan_file(filtered_bars):
+    # print("Filtered Bars: ", json.dumps(filtered_bars, indent=2))
+    scan_files = {}
+
+    for bar_id, bar_data in filtered_bars.items():
+        count = 0
+        proposal_id = bar_data["proposal_id"]
+        bar_name = bar_data["bar_name"]
+        bar_id = bar_data["bar_id"]
+
+        scan_files[bar_id] = {
+            "proposal": proposal_id,
+            "bar_name": bar_name,
+            "bar_id": bar_id,
+            "scan_files": []
+        }
+        for config in bar_data["sample_configs"]:
+            scan_type = config["scan_type"]
+            if (scan_type in ENERGY_SCAN_TEMPLATE
+                and scan_type in SCAN_BODY_BULIDERS):
+                sample_name = config["sample_name"]
+                sample_id = config["sample_id"]
+                scan_file_info = f"# Sample Info: sample name: {sample_name} | bar name: {bar_name} | scan type: {scan_type}\n\n"
+                header = f"{ENERGY_SCAN_TEMPLATE[scan_type]["header"]}\n"
+                subheader = f"{ENERGY_SCAN_TEMPLATE[scan_type]["subheader"]}\n"
+                zero = ENERGY_SCAN_TEMPLATE["zero_input"]
+                element_energy_tag = f"{ELEMENT_ENERGY_RANGE[config["scan_parameters"]["element_template"]]}\n"
+                repititions = int(int(config["scan_parameters"]["repititions"]) / 2)
+                save = ENERGY_SCAN_TEMPLATE["save"]
+                scan_body = []
+                scan_body.append(f"{scan_file_info}{header}{subheader}")
+                build_file = SCAN_BODY_BULIDERS[scan_type](config, scan_body, zero, element_energy_tag, repititions, save)
+                # print(json.dumps(build_file, indent=2))
+ 
+                scan_files[bar_id]["scan_files"].append({
+                    "sample_id": sample_id,
+                    "sample_name": sample_name,
+                    "scan_type": scan_type,
+                    "bar_id": bar_id,
+                    "bar_name": bar_name,
+                    "build_file": build_file,
+                })
+    return scan_files
+
+def save_files(scan_files, proposal_id):
+    main_dir = f"{proposal_id}"
+    os.makedirs(main_dir, exist_ok=True)
+    print("Main dir:\n", main_dir)
+    for bar_id, bar_data in scan_files.items():
+        bar_name = bar_data["bar_name"]
+        bar_dir = os.path.join(main_dir, bar_name)
+        os.makedirs(bar_dir, exist_ok=True)
+        print("Bar folder:\n", bar_dir)
+        for sample in bar_data["scan_files"]:
+            safe_sample_name = "".join(c for c in sample["sample_name"] if c.isalnum() or c in (" ", "_")).rstrip()
+            sample_file = os.path.join(bar_dir, f"{safe_sample_name}.txt")
+            print("making sample file:\n", sample_file)
+            with open(sample_file, 'w') as f:
+                f.write("".join(sample["build_file"]))
 
 def main():
     display_prompt()
     repeat = 'y'
-    user_credentials = get_user_credentials()
+    # user_credentials = get_user_credentials()
+    user_credentials = {
+        "proposal_id": "admin",
+        "beamline": "",
+        "username": "admin",
+        "password": "2jf70TPNZsS",
+        }
     scicat_results = get_bars_from_scicat_server(proposal_id_input=user_credentials["proposal_id"], username_input=user_credentials["username"], password_input=user_credentials["password"])
+    # print("Scicat_results from main: \n", json.dumps(scicat_results, indent=2))
     filtered_bars = filter_scicat_bars(user_credentials, scicat_results)
-    print(json.dumps(filtered_bars, indent=2))
-    
-    
-    
-    while repeat[0] != 'n':
-        repeat = input("Would you like to generate any more scan files? (Y/N): ").lower() # quits the loop
-        if repeat[0] == 'y':
-            user_credentials = get_user_credentials()
-            scicat_results = get_bars_from_scicat_server(proposal_id_input=user_credentials["proposal_id"], username_input=user_credentials["username"], password_input=user_credentials["password"])
-            filtered_bars = filter_scicat_bars(user_credentials, scicat_results)
-        elif repeat[0] == 'n':
-            print("Quitting program...")
-            exit
-        else:
-            print("You made an invalid choice:")
+    # print("Filtered bars in main:\n", json.dumps(filtered_bars, indent=2))
+    scan_files = build_scan_file(filtered_bars)
+    print("Scan files:\n", json.dumps(scan_files, indent=2))
+    save_files(scan_files, user_credentials["proposal_id"])
+    # while repeat[0] != 'n':
+    #     repeat = input("Would you like to generate any more scan files? (Y/N): ").lower() # quits the loop
+    #     if repeat[0] == 'y':
+    #         user_credentials = get_user_credentials()
+    #         scicat_results = get_bars_from_scicat_server(proposal_id_input=user_credentials["proposal_id"], username_input=user_credentials["username"], password_input=user_credentials["password"])
+    #         filtered_bars = filter_scicat_bars(user_credentials, scicat_results)
+    #     elif repeat[0] == 'n':
+    #         print("Quitting program...")
+    #         exit
+    #     else:
+    #         print("You made an invalid choice:")
     
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-    
